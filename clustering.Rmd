@@ -1,0 +1,382 @@
+---
+title: "Clustering of TOP 5 European Leagues Players"
+author: "Cezary Kuźmowicz"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<style>
+body {
+text-align: justify}
+</style>
+
+## “The ball doesn’t go in by chance” ~ Johan Cruyff
+
+Football is the most popular sport on Earth. Millions of people around the globe play it on daily basis. Most of countries have their own national leagues. But the best of the best take place in Europe. In football's nomenclature, while sharing some graphs and statistics, often used concept is "TOP 5 European Leagues". That means clearly five best national competitions in Europe. 
+
+This group consist of English Premier League, Spanish LaLiga, Italian Serie A, German Bundesliga and French Ligue 1. In this report I will conduct clustering analysis using players statistics from season 2021/22.
+
+In order to achieve satisfactory results many tests and visualizations will be presented. As the clustering method I've chose k-means, mainly due to medium size of dataset and simply interpretation.
+
+[dataset used for analysis](https://www.kaggle.com/datasets/vivovinco/20212022-football-player-stats)
+
+### Installing neccesary packages
+
+In the beginning we have to install and access needed packages for whole analysis:
+
+```{r, echo=TRUE, results= FALSE}
+library(ggplot2)
+library(cluster)
+library(NbClust)
+library(reshape2)
+library(clustertend)
+library(ClusterR)
+library(fpc)
+library(flexclust)
+library(factoextra)
+```
+# CLUSTERING PREPARATIONS
+
+## Data Preparation
+
+### Loading dataset into R
+
+My dataset comes from Kaggle. It was prepared based on data from [fbref](https://fbref.com/en/) - online website gathering huge amount of informations from plenty of sports.
+
+```{r, echo=TRUE}
+raw_stats <- read.csv("/Users/czarek/Downloads/2021-2022 Football Player Stats.csv", sep = ";", dec = ".",
+                      check.names = FALSE)
+```
+
+Raw dataset includes nearly 3000 observations (individual players), each described by 143 variables! It's important to add that every statistic is calculated "per 90 minutes". This means that author already unified data, so one step less for us!
+
+First step during our data preparation will be excluding footballers who played less than 180 minutes through whole season. That operation will assure us that we don't analyze player who for example scored 4 goals in his only played match.
+
+```{r}
+stats_180 <- raw_stats[raw_stats$Min >= 180,]
+```
+
+By conducting such an operation we got rid of nearly 600 observations. That will definitely improve overview of our dataset and quality of analysis.
+
+Before removing some of them, let's dive into overview of the data
+
+```{r}
+head(stats_180)
+summary(stats_180)
+str(stats_180)
+```
+
+As you can see, there is too much information. Analyzing dataset with such a number of variables is very impractical. But there are some overall insights are can obtain:
+   
+- many variables are right-skewed
+   
+- in almost every statistic max value is hard outlier. It isn't error; that's just world-class players
+   
+- excluding first 6 variables, all of them are integers and numbers
+
+
+In conducting clustering important part is assuring that none NAs occur
+
+```{r}
+colSums(is.na(stats_180))
+```
+
+As we can see - there are none NA values. Probably author from Kaggle already handled it. 
+
+## Handling number of variables
+
+In our dataset we have nearly 150 columns. That is pretty impressive amount but plenty of them are too detailed/provide no valuable information. In order to choose the best I studied every columns. What's more, I'm a football fan for more than 12 years (majority of my life!). Thanks to that experience I was able to choose the most valuable variables. 
+
+After plenty of testing (including calculating Hopkins statistics for each set of columns) I decided to limit number of variables from 143 to 8. Part of Data Scientist's job is using previous experience and knowledge to better understand and solve problems. So did I here!
+
+```{r}
+less_vars <- c('Shots', 'PasTotAtt', 'Assists', 'Tkl', 'Blocks',  'Fls', 'Off', 'AerWon%')
+```
+
+I've tried to choose as diverse and valuable variables as I could. Let's decode them:  
+- **Shots**: shots taken by player, per 90 min  
+- **PasTotAtt**: total number of pass attempts, per 90 min   
+- **Assists**: assists given by player, per 90 min   
+- **Tkl**: number of times a ball has been picked up (tackled), per 90 min   
+- **Block**: number of times player has blocked a pass/shot, per 90 min    
+- **Fls**: number of fauls comitted by player, per 90 min    
+- **Off**: number of times player has been caught on offside position, per 90 min    
+- **AerWon%**: share of won aerial head duels, in %
+
+
+```{r}
+less_stats <- stats_180[,less_vars]
+```
+
+By creating new data frame with less variables, I could easily continue my analysis. 
+
+### Hopkins statistics
+In order to check how clusterable is my dataset, I'll compute Hopkins test. It compares the distances between randomly sampled points in the dataset and synthetic points generated uniformly in the feature space. A value close to **1** indicates strong clustering tendency, while a value near **0.5** suggests the data is uniformly distributed and unlikely to form meaningful clusters.
+
+```{r}
+hopkins(less_stats, n=nrow(less_stats)-1)
+```
+
+The value of Hopkins statistic is pretty low. If we would interpret it in proper way, we could conclude that our data is uniformly distributed or random. But we won't be so serious... That low value comes from high number of observations and variables. Obtaining  high Hopkins statistics from such a complex dataset is not common. 
+
+## Data Visualisation
+
+In order present some of the statistics of charts, I'll create another variable for those purposes. 
+
+```{r}
+foot_vars <- c("Min", "90s", "Goals", "PasTotAtt", "AerWon%")
+player_stats <- stats_180[,foot_vars]
+```
+
+### Minutes played
+First thing we want to visualize is played time. It's important to see if your results won't be biased by footballers who played very limited time.
+
+```{r, echo=FALSE}
+ggplot(player_stats, aes(x = Min)) +
+  geom_histogram(binwidth = 90, fill = "skyblue", color = "black") +
+  labs(title = "Distribution of Minutes Played (90 minutes intervals)", 
+       x = "Minutes Played (90 minutes bins)", 
+       y = "Number of players")
+```
+
+We could observe that played time is more or less equally distributed. Biggest differences are visible in the beginning and end of the plot - that's pretty intuitive. Those differences aren't big enough to influence our analysis strongly. 
+
+### Goals
+Next statistics we will deep into are scored goals. In order to better visualize it, I will multiply the "goals/90min" times "played 90s". That way I am able to present the most goalscoring players.
+
+```{r,echo=FALSE}
+player_stats$total_goals <- player_stats$Goals * player_stats$'90s'
+
+ggplot(player_stats, aes(x = total_goals)) +
+  geom_histogram(binwidth = 1, fill = "red", color = "black") +
+  labs(title = "Distribution of Goals", 
+       x = "Goals", 
+       y = "Number of players")
+
+```
+
+From this chart we see that majority of players didn't score any goal (nearly 1000 footballers). This could be somehow intuitive because positions like goalkeepers or defenders rarely celebrate goals. 
+
+The plot has extremely long right tail. Those single values aren't errors. They are just super-star forwards like Lewandowski or Haaland. 
+
+
+### Passes
+If we talked about scoring goals, now let's check how many passes players make per 90 minutes. This plot should be more normally distributed because passing aren't only trait of midfielders. 
+
+```{r, echo=FALSE}
+ggplot(player_stats, aes(x = PasTotAtt)) +
+  geom_histogram(binwidth = 5, fill = "lightgreen", color = "black") +
+  labs(title = "Distribution of Total Passes Attempts per 90 minutes", 
+       x = "Passes Attempts per 90 minutes", 
+       y = "Number of players")
+```
+
+As predicted, distribution of passes attempts is more normal distribution. It also has longer right tail but it isn't that extreme as in goals scored case. Once again, "the outliers" are usually the world class players. What's interesting, we could find some defenders with one of the highest values (like Sergio Ramos or Jordi Alba). In the end, the most frequent passing players are midfielders, for example Toni Kroos and Marco Veratti.
+
+
+### Aerial duels
+We analyzed domain of forwards and midfielders. Now it's time for defenders! Last statistic we will analyze is percentage of won aerial duels. By stereotype the tallest players in each team are defenders. Their role is to protect the goal, often by winning aerial duels in penalty area. 
+
+```{r, echo=FALSE}
+ggplot(player_stats, aes(x = `AerWon%`)) +
+  geom_histogram(binwidth = 5, fill = "yellow", color = "black") +
+  labs(title = "Distribution of won aerial duels", 
+       x = "% of won aerial duels", 
+       y = "Number of players")
+```
+
+With every plot we are step closer to normal distribution shape! This time we have "problem" from the other side - nearly 200 players didn't win any aerial ball! This may sound ridiculous but if you discover that some players are only 150-160 cm height, it appears more real. Such a footballers have little chance of winning aerial ball with 190 cm enemy defender. When it comes to players with 100%, they are almost all defenders. 
+
+
+## Correlation Analysis
+
+Crucial part of conducting analysis such a clustering is checking correlations between variables. If they are be too high, it will negatively impact quality of the output. In our case situation is a little bit easier - in the beginning I reduced number of variables from 143 to only 8. They are all describing overall different characteristics of players.
+
+In order to prepare visually appealing heatmap, I have to calculate the correlations between my variables. Having this done I'll convert the data into a molten data frame using *melt* function from *reshape2* package.
+
+```{r}
+stats_cor <- cor(less_stats)
+cor_long <- melt(stats_cor)
+```
+
+With ready data, I am able to create a correlation heatmap. It'll visualize connections between variables in very intuitive and clean way.
+
+```{r,echo=FALSE}
+ggplot(cor_long, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile(color = "white") +  
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1, 1), 
+                       name = "Correlation") +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +  
+  labs(title = "Correlation Heatmap", x = "", y = "")
+```
+
+As we could see on the heatmap, no extreme correlations occur. Two of the highest correlation values are connected with offsides (Off). First one is positive correlation with shots (Shots) - this could be explain by the fact that most shots are hit by forwards, playing in the front. They are most exposed to be caught on the offside. 
+
+Negatively correlated variable with offside is pass attempts (PasTotAtt). This could also be explained by player positions. Most passes, as described in Data Visualization section, are done by midfielders and defenders. Those players stay more in the back and are not exposed to be on offside position. 
+
+We could conclude that no strong correlations occur - they won't disturb the results of our analysis.
+
+# CLUSTERING ANALYSIS
+
+## Pre-clustering details
+### Scaling the data
+
+Scaling data is necessary - variable such as "AerWon%" would have stronger impact on results of analysis due to it's format (range from 0 to 100). Rest variables are calculated per 90 minutes.
+
+```{r}
+stats_scaled <- scale(less_stats)
+head(stats_scaled, 5)
+summary(stats_scaled)
+```
+
+After scaling we could see that our data is more reliable showing variance in variables. It'll be perfect for clustering. 
+
+### Optimal number of clusters
+
+In order to get optimal number of clusters, we will use *NbClust* and *Optimal_Clusters_KMeans* functions. 
+
+First is *NbClust*:
+```{r}
+opt_clusters <- NbClust(stats_scaled, distance = 'euclidean', min.nc = 2, max.nc = 10, method = 'complete',
+                        index = 'silhouette')
+opt_clusters$All.index
+opt_clusters$Best.nc
+```
+
+Accroding to NbClust, the best number of clusters is 2. There is significant difference (10x) between it and other options.    
+
+
+This time we will use *Optimal_Clusters_KMeans* function. It will be conducted 3 times - once with default criterion (variance_explained), then with silhouette and last one with AIC. Each function has set max number or clusters to 10. 
+
+```{r, echo = F}
+opt2 <- Optimal_Clusters_KMeans(stats_scaled, max_clusters=10, plot_clusters = TRUE)
+title(main = "Proper number of clusters (Variance Explained)")
+
+opt3 <- Optimal_Clusters_KMeans(stats_scaled, max_clusters=10, plot_clusters=TRUE, criterion="silhouette")
+title(main = "Proper number of clusters (Silhouette)")
+
+opt4 <- Optimal_Clusters_KMeans(stats_scaled, max_clusters=10, plot_clusters=TRUE, criterion="AIC")
+title(main = "Proper number of clusters (AIC)")
+```
+
+Decision about number of clusters is not easy. NbClust extremely highly suggested only 2 - in my opinion such a small number won't be especially informative and insightful. That's why I've chose conducting my  analysis on 3 clusters. All three *Optimal_Clusters_KMeans* plots suggest that number. Silhouette shows the highest value for 3 clusters. On variance_explained plot I'm looking for well-known "elbow point" ;) Drops in values are significant till 3, then they're visibly smaller. When it comes to AIC - the lower value, the better fit. Regarding data from chart and other information number of 3 is here also optimal choice. 
+
+To sum up this section - final number of clusters is 3.
+
+## Clustering (finally)
+
+As a method of our clustering analysis I'm choosing k-means. Why? It is:   
+- efficient in our case (scales well up to thousands of observations)   
+- easy to understand and interpret    
+
+As being said, let's cluster some data!
+
+```{r}
+cluster_km <- kmeans(stats_scaled, 3)
+fviz_cluster(cluster_km, geom = "point", stats_scaled) + ggtitle("Number of cluster - 3")
+```
+
+On the graph we see 3 groups. Cluster 1 stands out from the rest - almost all assigned observations are highly concentrated far from others. There is no clear space between cluster 2 and 3. The blue one (3) is seem to have lower variance (high density and no strong "outliers"). The green cluster (2) looks the most differentiated - that's mainly by some extreme observations which extend its area on the plot. My guess about this players - that could be some superstars with unreal statistics which look like outliers.
+
+To check how well observation fits into assigned cluster, we will calculate and visualize Silhouette width. It has range from -1 to 1, and we could interpret certain values in that way:   
+- **s(i) ~ +1**: observation is much more closer to points in its own cluster than to points in other clusters (good fit, perfect situation)   
+- **s(i) ~ 0**: observation is on decision boundary between two neighboring cluster   
+- **s(i) ~ -1**: observation is assigned into wrong cluster   
+
+Knowing the theory behind Silhouette width, we could calculate and visualize it. 
+
+```{r}
+sil<-silhouette(cluster_km$cluster, dist(stats_scaled))
+fviz_silhouette(sil)
+```
+
+First thing we could comment is clusters size. Without any doubt the biggest one in Cluster 3. It includes nearly 62% of all observations. Its average Silhouette width is 0.36, which is moderate value. On the other side is Cluster 1 - it covers over 7% of players but have incredibly high Silhouette width - 0.87. Such a value indicates that this is our best cluster in terms of fitting observations. Last cluster, number 2, is not that perfect. It groups nearly 31% of players while having avg. width equal to 0.18. What's more, that cluster has some observations below 0 - that means that they're on decision boundary and are not easy to assign. 
+
+### Additional quality measure
+
+#### Calinski-Harabasz
+    
+In short words - it evaluates the compactness and separation of clusters. A higher CH Index value indicates better-defined clusters, as it suggests high between-cluster variance and low within-cluster variance. We will calculate CH index for our choice (3 clusters) and additionaly two more options - 2 and 4 clusters.
+
+```{r, echo = F}
+print('Calinski-Harabasz index for 3 clusters')
+round(calinhara(stats_scaled, cluster_km$cluster),digits = 2)
+
+print('Calinski-Harabasz index for 2 clusters')
+km2 <- kmeans(stats_scaled, 2)
+round(calinhara(stats_scaled, km2$cluster),digits = 2)
+
+print('Calinski-Harabasz index for 4 clusters')
+km4 <- kmeans(stats_scaled, 4)
+round(calinhara(stats_scaled, km4$cluster),digits = 2)
+```
+
+Highest value of CH index was obtained for 3 clusters. This means that our original choice provides a more compact and well-separated clustering structure. It is the most optimal cluster.        
+    
+    
+#### Shadow statistics
+
+Shadow statistics is used to evaluate the quality of clustering. It is similar in concept to the Silhouette Score. The shadow statistic provides insights into how well an individual data point fits into its assigned cluster compared to other clusters.
+      
+      
+It's interpretation is very similar to Silhouette:    
+- **S(i) ~ +1**: observation is much more closer to points in its own cluster than to points in other clusters (good clustering for that point)   
+- **S(i) ~ 0**: observation is on decision boundary between two neighboring cluster ( uncertainty in its assignment)    
+- **S(i) ~ -1**: observation is assigned into wrong cluster   
+    
+```{r, echo = T}
+for_shadow <- cclust(stats_scaled, 3, dist="euclidean")
+shadow(for_shadow)
+plot(shadow(for_shadow))
+```
+    
+    
+So there are the results. We could observe that Cluster 1 have very low shadow values. On the other hand, Cluster 3 most points have high shadow values (near 0.7 – 0.8), suggesting it's strong cohesion. Cluster 2 presents wide range of values but moreover it's pretty good one.        
+
+**Why this graph differs so much from Silhouette one?**   
+Main reason is differences in methodologies. Silhouette score calculates distance of a point to its cluster versus the closest other cluster. On the other hand, shadow statistic compares a point's distance to its cluster's centroid versus the nearest cluster's centroid. That's why.
+
+    
+## Clusters summary and interpretation
+
+Seeing distribution of observation into clusters without analyzing their centers is worthless. Let's see features of our clusters.
+
+```{r, echo=FALSE}
+print("Cluster Centers:")
+print(cluster_km$centers)
+```
+
+Already knowing centers for every statistic allows us to create insightful clusters which could describe whole dataset well. I'll also make a use of my expertise knowledge in naming them. 
+
+**Cluster 1 - Goalkeepers**   
+*(n = 173, avg. sil. = 0.87)*
+  
+Very homogeneous group. They have almost all statistics centers on the lowest level. This could be explained by two factors. First - their real role during the match. Goalkeepers' mission is to protest their teams from losing goals. They are not shooting, assisting, blocking or being on offside. They just stay mainly in penalty area and secure. Important statistic are won aerial duels. It may be obvious that 2m players have nearly 100% won balls. The hook is in the methodology - mentioned statistic describe won aerial HEAD duels. Goalkeepers mostly catch the ball into hands, so it doesn't count. 
+   
+    
+      
+**Cluster 2 - Offensive Players**   
+*(n = 723, avg. sil. = 0.18)*
+  
+This cluster is not as good fitted as previous one. It's characterized by highest number of shots and assists - two metrics directly connected with scoring goals. Players from this cluster are also often caught on offside position, which is due to their front positioning on the pitch. What's little surprising - they tend to make the least passes, even less than goalkeepers. That may show that this group of players don't need that many passes to do their job. 
+    
+      
+
+**Cluster 3 - Defensive Players**   
+*(n = 1454, avg. sil. = 0.36)*
+  
+The largest cluster with moderate fit. I've named it defensive because most statistics have reversed values compared to Cluster 2. It contains large group of players - not only defenders, but also plenty of midfielders. They tend to shoot less and pass more (while having less assists). Clear defensive statistics like blocks and tackles (Tkl) are also highest in this cluster. Those players are also winning most aerial (head) duels; that could be influenced by height of defenders.
+    
+    
+        
+## Conclusions 
+
+In this report we have gone through every process of clustering analysis. Started with loading data and choosing most appropriate variables. Then some visualizations to better understand the whole dataset. In the end, crème de la crème, proper clustering.
+   
+Results could be for someone interested in football pretty intuitive. This analysis also confirms that expertise knowledge agrees with independent data. Using such interesting tools to describe my hobby was an awesome experience. I've enjoyed it a lot :)
+
